@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import sys
 
 import requests
@@ -69,6 +70,40 @@ def build_content(text: str) -> str:
     return json.dumps({"text": text}, ensure_ascii=False)
 
 
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+
+
+def _parse_inline(text: str) -> list:
+    """把一行文本里的 **加粗** 解析成 post 文本元素列表。"""
+    elements = []
+    pos = 0
+    for m in _BOLD_RE.finditer(text):
+        if m.start() > pos:
+            elements.append({"tag": "text", "text": text[pos:m.start()]})
+        elements.append({"tag": "text", "text": m.group(1), "style": ["bold"]})
+        pos = m.end()
+    if pos < len(text):
+        elements.append({"tag": "text", "text": text[pos:]})
+    return elements or [{"tag": "text", "text": " "}]
+
+
+def build_post_content(text: str) -> str:
+    """post（富文本）消息 content：逐行成段，**加粗** 转 style=bold 元素。
+
+    纯 text 消息不渲染 markdown（** 只会原样显示），所以默认走 post。
+    """
+    paragraphs = [_parse_inline(line) for line in text.split("\n")]
+    return json.dumps(
+        {"zh_cn": {"title": "", "content": paragraphs}}, ensure_ascii=False
+    )
+
+
+def _msg_type_and_content(args) -> tuple:
+    if getattr(args, "format", "post") == "post":
+        return "post", build_post_content(args.text)
+    return "text", build_content(args.text)
+
+
 def send_via_api(args) -> dict:
     cred = load_credentials()
     token = get_tenant_access_token(cred["app_id"], cred["app_secret"])
@@ -76,18 +111,18 @@ def send_via_api(args) -> dict:
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json; charset=utf-8",
     }
-    content = build_content(args.text)
+    msg_type, content = _msg_type_and_content(args)
 
     if args.reply_to:
         url = REPLY_URL.format(message_id=args.reply_to)
-        body = {"msg_type": "text", "content": content}
+        body = {"msg_type": msg_type, "content": content}
         if args.chat_id:
             body["chat_id"] = args.chat_id
     else:
         url = SEND_URL
         body = {
             "receive_id": args.chat_id,
-            "msg_type": "text",
+            "msg_type": msg_type,
             "content": content,
         }
 
@@ -102,13 +137,14 @@ def send_via_api(args) -> dict:
 
 
 def dry_run_payload(args) -> dict:
+    msg_type, content = _msg_type_and_content(args)
     if args.reply_to:
         return {
             "url": REPLY_URL.format(message_id=args.reply_to),
             "headers": {"Authorization": "Bearer <tenant_access_token>"},
             "body": {
-                "msg_type": "text",
-                "content": build_content(args.text),
+                "msg_type": msg_type,
+                "content": content,
                 **({"chat_id": args.chat_id} if args.chat_id else {}),
             },
         }
@@ -117,8 +153,8 @@ def dry_run_payload(args) -> dict:
         "headers": {"Authorization": "Bearer <tenant_access_token>"},
         "body": {
             "receive_id": args.chat_id,
-            "msg_type": "text",
-            "content": build_content(args.text),
+            "msg_type": msg_type,
+            "content": content,
         },
     }
 
@@ -128,6 +164,10 @@ def main() -> int:
     parser.add_argument("--chat-id", required=True, help="chat_id（p2p 或群聊）")
     parser.add_argument("--text", required=True, help="要发送的文本内容")
     parser.add_argument("--reply-to", help="可选：要回复的飞书 message_id")
+    parser.add_argument(
+        "--format", choices=["post", "text"], default="post",
+        help="post=富文本（默认，**加粗** 可渲染）；text=纯文本",
+    )
     parser.add_argument(
         "--dry-run", action="store_true", help="只打印将发送的 payload，不联网"
     )

@@ -135,7 +135,7 @@ python3 examples/consumer_openai.py --once   # 只跑一轮
 
 ## English summary
 
-**feishu-bridge** connects a Feishu (Lark) enterprise self-built app bot to a local processor:
+**feishu-muse-bridge** connects a Feishu (Lark) enterprise self-built app bot to a local processor:
 messages arrive over the official `lark-oapi` WebSocket long connection (no public IP or
 webhook endpoint needed), are stored in a local SQLite queue (`pending / processing /
 done / failed`), and any external agent can poll the queue, process messages, and reply

@@ -8,12 +8,14 @@ import os
 import pathlib
 import re
 import sys
+import threading
+import time
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
-# --- 代理补丁（适用于只能经 HTTP 代理出网的环境）---
-# 若运行环境直连外网不通、必须走 HTTP 代理：lark-oapi 1.7.5 的
+# --- 代理补丁（本机环境专用）---
+# 本 VM 直连外网不通，必须走环境变量里的 HTTP 代理；而 lark-oapi 1.7.5 的
 # ws 客户端写死了 proxy=None（直连），导致 TLS 握手 WRONG_VERSION_NUMBER。
 # 这里包装 websockets.connect：SDK 传 proxy=None 时，改填环境代理，走 CONNECT 隧道。
 import websockets as _websockets
@@ -140,18 +142,57 @@ def handle_message(data: P2ImMessageReceiveV1) -> None:
     status = "已入队" if ok else "重复消息(跳过)"
     print(f"[ingest] receive message_id={msg['feishu_message_id']} "
           f"chat_type={msg['chat_type']} msg_type={msg['msg_type']} → {status}", flush=True)
+
+    if ok:
+        # 即时回执：立刻发一条占位消息，处理进程会把进度原地更新到这条上、
+        # 最后替换为正式答复；让用户能立刻确认桥是活的，不用猜卡住还是断线。
+        try:
+            import bridge.progress as progress
+
+            mid = progress.send_placeholder(
+                msg["chat_id"],
+                msg["feishu_message_id"],
+                feishu_message_id=msg["feishu_message_id"],
+            )
+            print(f"[ingest] 进度回执: {mid}", flush=True)
+        except Exception as e:  # 回执失败不影响已入队的消息
+            print(f"[ingest] 进度回执发送失败（不影响入队）: {e}", flush=True)
     if msg["text"] is None:
         # 解析兜底日志：正文没提取出来时把原始 content 打进日志，避免内容静默丢失
         raw = getattr(message, "content", None)
         print(f"[ingest][warn] text 解析为空，原始 content={str(raw)[:500]}", flush=True)
 
 
-def main() -> None:
-    cred = load_credentials()
+HEARTBEAT_FILE = "ingest-heartbeat.json"
 
+
+def _heartbeat_loop() -> None:
+    """每 20 秒写一次心跳文件，供看门狗钩子判断 ingest 是否还活着。
+
+    2026-10-22 教训：WS 断开后 SDK 偶发不重连、进程直接退出，桥聋了
+    12 分钟用户才发现。心跳停更 >90 秒，看门狗就跑 healthcheck 拉起进程。
+    """
+    path = data_dir() / HEARTBEAT_FILE
+    while True:
+        try:
+            path.write_text(json.dumps({"ts": time.time(), "pid": os.getpid()}))
+        except Exception:
+            pass
+        time.sleep(20)
+
+
+def _ignore_event(data) -> None:
+    """反应类事件的空处理器：机器人自己加的 OnIt 反应会回流成事件，
+    不注册处理器时 SDK 会打 ERROR 日志（processor not found），无害但扰民。"""
+    return None
+
+
+def _run_client(cred: dict) -> None:
     dispatcher = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(handle_message)
+        .register_p2_im_message_reaction_created_v1(_ignore_event)
+        .register_p2_im_message_reaction_deleted_v1(_ignore_event)
         .build()
     )
 
@@ -161,8 +202,22 @@ def main() -> None:
         event_handler=dispatcher,
         log_level=lark.LogLevel.INFO,
     )
-    print(f"[ingest] 开始连接飞书长连接 (app_id={cred['app_id'][:8]}...)")
-    ws_client.start()  # 阻塞运行；断线由 SDK 自动重连
+    print(f"[ingest] 开始连接飞书长连接 (app_id={cred['app_id'][:8]}...)", flush=True)
+    ws_client.start()  # 阻塞运行；一般断线由 SDK 自动重连
+
+
+def main() -> None:
+    cred = load_credentials()
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
+    # 进程级自愈：SDK 若放弃重连导致 start() 返回/抛错，5 秒后整客户端重启，
+    # 不依赖外部巡检（2026-10-22 曾因此断线 12 分钟且期间消息丢失）。
+    while True:
+        try:
+            _run_client(cred)
+            print("[ingest] 长连接客户端已退出，5 秒后重启", flush=True)
+        except Exception as e:
+            print(f"[ingest] 长连接异常退出: {e}，5 秒后重启", flush=True)
+        time.sleep(5)
 
 
 if __name__ == "__main__":
