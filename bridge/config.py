@@ -144,10 +144,13 @@ def main() -> int:
         return 2
     if argv[0] == "set" and len(argv) == 3:
         key, raw = argv[1], argv[2]
-        try:
-            value: object = int(raw)
-        except ValueError:
-            value = raw
+        if raw.lower() in ("true", "false", "on", "off", "yes", "no"):
+            value: object = raw.lower() in ("true", "on", "yes")
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                value = raw
         cfg = load_config()
         if key not in cfg:
             print(f"未知配置项: {key}（可选: {', '.join(cfg)}）", file=sys.stderr)

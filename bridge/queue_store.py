@@ -248,6 +248,7 @@ _USAGE = """用法:
   python3 -m bridge.queue_store pending [--limit N]
   python3 -m bridge.queue_store stats
   python3 -m bridge.queue_store reset-stale [--minutes N]
+  python3 -m bridge.queue_store mark_processing <id>
 """
 
 
@@ -302,6 +303,20 @@ def _cli_reset_stale(argv: list[str]) -> int:
     return 0
 
 
+def _cli_mark_processing(argv: list[str]) -> int:
+    if not argv:
+        print("缺少队列 id", file=sys.stderr)
+        return 2
+    try:
+        qid = int(argv[0])
+    except ValueError:
+        print(f"队列 id 非法: {argv[0]}", file=sys.stderr)
+        return 2
+    ok = mark_processing(qid)
+    print(f"已认领队列 {qid}" if ok else f"认领失败（队列 {qid} 不存在或已非 pending）")
+    return 0 if ok else 1
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if not argv:
@@ -317,6 +332,8 @@ def main() -> int:
         return _cli_stats()
     if cmd == "reset-stale":
         return _cli_reset_stale(rest)
+    if cmd == "mark_processing":
+        return _cli_mark_processing(rest)
     print(f"未知命令: {cmd}", file=sys.stderr)
     print(_USAGE, file=sys.stderr)
     return 2
