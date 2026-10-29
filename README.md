@@ -90,7 +90,7 @@ python3 -m bridge.send_reply --chat-id oc_xxx --reply-to om_xxx --text "回复�
 飞书消息不再由独立边聊的 worker 处理，改由主会话的 Edison 本人直接处理：
 
 - 钩子 `feishu-inbox-watch`（`~/hooks/definitions/feishu-inbox-watch.json`，每 15 秒轮询 `~/hooks/scripts/feishu-inbox-check.sh`）的唤醒投递面改为 `main`，此前投递的边聊（"将飞书接入AI Agent Muse"）保留、不删除，仅不再接收新唤醒。
-- 处理指令原文见 [docs/main-session-prompt.md](docs/main-session-prompt.md)：飞书消息与主聊天消息同等对待，主会话的全部记忆、目标、工具与对话上下文都可用，飞书里的指代优先用本聊天上下文理解；进度回执卡片流程、审批先行规则、回复格式要求不变。
+- 处理指令原文见 [docs/main-session-prompt.md](docs/main-session-prompt.md)：飞书消息与主聊天消息同等对待，主会话的全部记忆、目标、工具与对话上下文都可用，飞书里的指代优先用本聊天上下文理解；进度回执卡片流程、审批先行规则、回复格式要求不变。v2（同日）：新增工具路由表（X/社媒链接走浏览器任务、实时信息搜索+页面核实、已接服务走连接器、构件走构件工具）、换路再试规则（一条路失败先换路，全部路线失败才 fail，且须列出试过的路）、同一会话历史上下文（新增 `queue_store history` 只读命令）、异步结果接续（浏览器/子代理 handoff 回来再 finish 卡片），并写明审批卡硬边界（只能在客户端点，飞书文字确认不能代替）。v3（同日，13:26 实测 v2 已生效仍失败）：点名两种浏览器的区别（browser.open 只是文本抓取、x.com 会被策略拦截，不等于读不到；必须开 browser.browse 浏览器任务读 X 链接）、没开过浏览器任务不得判读不到、严禁让用户“去主会话再发一次”。
 - 处理完且已在飞书回复后，主聊天静默结束，不重复搬运对话；仅处理失败、需主聊天拍板、或飞书明确要求同步时，才在主聊天里说一声。
 - ingest / 队列 / 回发 / 看门狗 / 审批提醒均未动，健康检查与白名单机制不变。
 

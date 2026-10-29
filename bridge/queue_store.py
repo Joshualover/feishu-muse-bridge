@@ -188,6 +188,29 @@ def find_by_feishu_id(feishu_message_id: str) -> dict | None:
         conn.close()
 
 
+def list_history(chat_id: str, limit: int = 5,
+                statuses: tuple[str, ...] = ("done", "failed")) -> list[dict]:
+    """读同一会话最近已处理完的消息（done/failed），供理解追问与指代。
+
+    只读，不改任何状态。返回按 id 倒序（最近的在前），含原文与答复全文。
+    """
+    init_db()
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" for _ in statuses)
+        rows = conn.execute(
+            "SELECT id, feishu_message_id, chat_id, sender_open_id, msg_type,"
+            " text, status, reply_text, error, received_at, replied_at"
+            " FROM messages"
+            f" WHERE chat_id = ? AND status IN ({placeholders})"
+            " ORDER BY id DESC LIMIT ?",
+            (chat_id, *statuses, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def set_progress_message_id(id: int, progress_message_id: str) -> bool:
     conn = _connect()
     try:
@@ -249,6 +272,7 @@ _USAGE = """用法:
   python3 -m bridge.queue_store stats
   python3 -m bridge.queue_store reset-stale [--minutes N]
   python3 -m bridge.queue_store mark_processing <id>
+  python3 -m bridge.queue_store history --chat-id <chat_id> [--limit N] [--status done|failed|all]
 """
 
 
@@ -317,6 +341,45 @@ def _cli_mark_processing(argv: list[str]) -> int:
     return 0 if ok else 1
 
 
+def _cli_history(argv: list[str]) -> int:
+    chat_id = None
+    limit = 5
+    status = "done,failed"
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--chat-id" and i + 1 < len(argv):
+            chat_id = argv[i + 1]
+            i += 2
+        elif argv[i] == "--limit" and i + 1 < len(argv):
+            try:
+                limit = int(argv[i + 1])
+            except ValueError:
+                print(f"limit 参数非法: {argv[i + 1]}", file=sys.stderr)
+                return 2
+            i += 2
+        elif argv[i] == "--status" and i + 1 < len(argv):
+            status = argv[i + 1]
+            i += 2
+        else:
+            print(f"未知参数: {argv[i]}", file=sys.stderr)
+            return 2
+    if not chat_id:
+        print("缺少 --chat-id", file=sys.stderr)
+        return 2
+    if status == "all":
+        statuses = (STATUS_DONE, STATUS_FAILED, STATUS_PENDING, STATUS_PROCESSING)
+    else:
+        wanted = {s.strip() for s in status.split(",")}
+        allowed = {STATUS_DONE, STATUS_FAILED, STATUS_PENDING, STATUS_PROCESSING}
+        if not wanted or not wanted <= allowed:
+            print(f"status 参数非法: {status}", file=sys.stderr)
+            return 2
+        statuses = tuple(sorted(wanted))
+    for r in list_history(chat_id, limit, statuses):
+        print(json.dumps(r, ensure_ascii=False))
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if not argv:
@@ -334,6 +397,8 @@ def main() -> int:
         return _cli_reset_stale(rest)
     if cmd == "mark_processing":
         return _cli_mark_processing(rest)
+    if cmd == "history":
+        return _cli_history(rest)
     print(f"未知命令: {cmd}", file=sys.stderr)
     print(_USAGE, file=sys.stderr)
     return 2
